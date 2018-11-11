@@ -2,12 +2,12 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
 
+	"github.com/davecgh/go-spew/spew"
 	"github.com/denisbrodbeck/striphtmltags"
 )
 
@@ -38,12 +38,18 @@ type threadPage struct {
 
 type comment struct {
 	No  int    `json:"no"`
-	Com string `json:com`
+	Com string `json:"com"`
 }
 
 func main() {
 	var apiWrapper []apithreadWrapperObject
 	var wg sync.WaitGroup
+	var threadChannel chan aggregatedThread
+	var aggregatedThreads []aggregatedThread
+
+	if threadChannel != nil {
+		threadChannel = make(chan aggregatedThread)
+	}
 
 	response, err := http.Get(apiURL)
 	if err != nil {
@@ -55,26 +61,26 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-
 	for i := 0; i < len(apiWrapper); i++ {
 		for j := 0; j < len(apiWrapper[i].Threads); j++ {
-			if i == 0 {
-				wg.Add(j)
-			} else {
-				wg.Add(i * j)
-			}
-			go scrapeThread(apiWrapper[i].Threads[j])
+			wg.Add(1)
+			go scrapeThread(apiWrapper[i].Threads[j], threadChannel)
 		}
 	}
 
+	//wait for all the responses
 	wg.Wait()
 
+	for aggregatedThread := range threadChannel {
+		aggregatedThreads = append(aggregatedThreads, aggregatedThread)
+	}
+	close(threadChannel)
 	// threads := generateThreadUrls(response.Body)
-	// spew.Dump(threads)
+	spew.Dump(aggregatedThreads)
 
 }
 
-func scrapeThread(thread pagedThread) aggregatedThread {
+func scrapeThread(thread pagedThread, returnChannel chan aggregatedThread) {
 	var newAggregatedThread aggregatedThread
 	var scrapedThreadComments threadPage
 	var url strings.Builder
@@ -82,11 +88,9 @@ func scrapeThread(thread pagedThread) aggregatedThread {
 	url.WriteString(strconv.Itoa(thread.No))
 	url.WriteString(".json")
 
-	fmt.Printf("gathering thread %s\n", url.String())
-
 	response, err := http.Get(url.String())
 	if err != nil {
-		panic("error scraping thread")
+		panic(err)
 	}
 	defer response.Body.Close()
 
@@ -98,7 +102,9 @@ func scrapeThread(thread pagedThread) aggregatedThread {
 	//first post is always contains the title
 	newAggregatedThread.threadName = extractTitle(striphtmltags.StripTags(scrapedThreadComments.Comments[0].Com))
 	newAggregatedThread.comments = scrapedThreadComments.Comments[0:]
-	return newAggregatedThread
+
+	returnChannel <- newAggregatedThread
+	return
 }
 
 func extractTitle(rawComment string) string {
@@ -107,8 +113,6 @@ func extractTitle(rawComment string) string {
 	}
 
 	var title strings.Builder
-	fmt.Println(rawComment)
-	fmt.Println()
 
 	//official threads always have a / as their first character to denote their shorthand
 	//some people reference /g/ so we ignore those
