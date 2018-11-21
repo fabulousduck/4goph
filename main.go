@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/davecgh/go-spew/spew"
 	"github.com/denisbrodbeck/striphtmltags"
@@ -30,6 +29,7 @@ type aggregatedThread struct {
 	threadName string //only really gets used for /*/ threads
 	imageUrls  []string
 	comments   []comment
+	err        error
 }
 
 type threadPage struct {
@@ -43,13 +43,9 @@ type comment struct {
 
 func main() {
 	var apiWrapper []apithreadWrapperObject
-	var wg sync.WaitGroup
-	var threadChannel chan aggregatedThread
+	var routineCounter int = 0
+	var threadChannel = make(chan aggregatedThread)
 	var aggregatedThreads []aggregatedThread
-
-	if threadChannel != nil {
-		threadChannel = make(chan aggregatedThread)
-	}
 
 	response, err := http.Get(apiURL)
 	if err != nil {
@@ -63,40 +59,41 @@ func main() {
 	}
 	for i := 0; i < len(apiWrapper); i++ {
 		for j := 0; j < len(apiWrapper[i].Threads); j++ {
-			wg.Add(1)
+			routineCounter++
 			go scrapeThread(apiWrapper[i].Threads[j], threadChannel)
 		}
 	}
 
-	//wait for all the responses
-	wg.Wait()
-
-	for aggregatedThread := range threadChannel {
+	for i := 0; i < routineCounter; i++ {
+		aggregatedThread := <-threadChannel
 		aggregatedThreads = append(aggregatedThreads, aggregatedThread)
 	}
-	close(threadChannel)
-	// threads := generateThreadUrls(response.Body)
 	spew.Dump(aggregatedThreads)
 
 }
 
-func scrapeThread(thread pagedThread, returnChannel chan aggregatedThread) {
+func scrapeThread(thread pagedThread, returnChannel chan<- aggregatedThread) {
 	var newAggregatedThread aggregatedThread
 	var scrapedThreadComments threadPage
 	var url strings.Builder
+
 	url.WriteString(threadBaseURL)
 	url.WriteString(strconv.Itoa(thread.No))
 	url.WriteString(".json")
 
 	response, err := http.Get(url.String())
 	if err != nil {
-		panic(err)
+		newAggregatedThread.err = err
+		returnChannel <- newAggregatedThread
+		return
 	}
 	defer response.Body.Close()
 
 	err = json.NewDecoder(response.Body).Decode(&scrapedThreadComments)
 	if err != nil {
-		panic(err)
+		newAggregatedThread.err = err
+		returnChannel <- newAggregatedThread
+		return
 	}
 
 	//first post is always contains the title
